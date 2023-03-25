@@ -105,6 +105,20 @@ if (GameController.changedTarget) {
 }
 ```
 
+### Ideal direction to aim for
+
+The aiming point to return should be the desired target. In order to improve aiming, it will be rotated some distance:
+
+```js
+/* Rotate a point from the origin point */
+x = cos(a) * target.x - sin(a) * target.y;
+x = sin(a) * target.x + cos(a) * target.y;
+```
+
+The rotation angle will be exaggerated when `nextCheckpointAngle` is large, and minimized when it is small. It should not make the pod rotate in the other direction.
+
+PD. Math.cos uses radians.
+
 # Nominal types
 
 This project uses branding as a workaround for nominal types.

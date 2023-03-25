@@ -14,11 +14,16 @@ interface Coordinates {
   x: number;
   y: number;
 }
+interface Vector {
+  from: Coordinates;
+  to: Coordinates;
+}
 
 declare function readline(): string;
 
 /* Number types */
 type hexadecimalAngle = number & { __hexadecimalAngleBrand: string };
+type radianAngle = number & { __radianAngleBrand: string };
 type pixelDistance = number & { __pixelDistanceBrand: string };
 type zeroIndex = number & { __zeroIndexBrand: string };
 
@@ -37,6 +42,10 @@ interface GameState {
   target: Target;
   round: number;
   index: zeroIndex;
+  /* Dynamic */
+  selfCoords?: Coordinates;
+  opponentCoords?: Coordinates;
+  targetAngle?: hexadecimalAngle;
 }
 
 class TargetStoreSingleton {
@@ -52,6 +61,8 @@ class TargetStoreSingleton {
       index: this.allTargets.length as zeroIndex,
     };
     this.allTargets.push(newTarget);
+    console.error("Adding target...");
+    console.error(newTarget);
   }
 
   close(): void {
@@ -118,10 +129,26 @@ class GameControllerSingleton {
     }
   }
 
+  setDynamicProps(
+    newSelfCoords: Coordinates,
+    newOpponentCoords: Coordinates,
+    newTargetAngle: hexadecimalAngle
+  ): void {
+    if (this.state === undefined) {
+      throw new Error("State should be already defined");
+    }
+
+    this.state.selfCoords = newSelfCoords;
+    this.state.opponentCoords = newOpponentCoords;
+    this.state.targetAngle = newTargetAngle;
+  }
+
+  /* And state update as well */
   /* And state update as well */
   checkTargetChange(newTargetCoords: Coordinates): void {
     // const deestructuredCoords: Coordinates = {...newtar}
     // this.changedTarget = false;
+    this.prevState = deepCopy(this.state);
     if (
       this.prevState === undefined ||
       !compareCoords(this.prevState.target.checkpoint, newTargetCoords)
@@ -146,11 +173,10 @@ class GameControllerSingleton {
 
       /* Actually update the state */
       const { allTargets } = this.targetStoreReference;
-      const lastTarget = allTargets[allTargets.length - 1];
+      const currentTarget = allTargets[stateIndex];
       console.error(stateRound);
-      this.prevState = deepCopy(this.state);
       this.state = {
-        target: deepCopy(lastTarget),
+        target: deepCopy(currentTarget),
         round: stateRound,
         index: stateIndex,
       };
@@ -169,6 +195,62 @@ class GameControllerSingleton {
 
     return allTargets[(this.state.index + 1) % length];
   }
+
+  /* Finished */
+  idealRotatedTarget(): Coordinates {
+    if (this.state === undefined) {
+      throw new Error("State should be already defined");
+    }
+
+    let { targetAngle, selfCoords } = this.state;
+    if (targetAngle === undefined) {
+      throw new Error("state.targetAngle not defined");
+    }
+    if (selfCoords === undefined) {
+      throw new Error("state.selfCoords not defined");
+    }
+    /* Fixing: clockwise is positive */
+    targetAngle = (targetAngle * -1) as hexadecimalAngle;
+
+    /** -1 or 1 */
+    // const rotatingAngleSign = -targetAngle / targetAngle;
+    const denominator = 3;
+    const dynamicRotatingAngle = targetAngle / denominator;
+    let rotatingAngle;
+    /* If targetAngle > 0, then rotating angle < 0 */
+    if (targetAngle >= 0) {
+      if (dynamicRotatingAngle < 0) {
+        throw new Error("dynamicRotatingAngle has wrong sign");
+      }
+
+      rotatingAngle = closestToZero(dynamicRotatingAngle, 179 - targetAngle);
+    } else {
+      if (dynamicRotatingAngle > 0) {
+        throw new Error("dynamicRotatingAngle has wrong sign");
+      }
+      rotatingAngle = closestToZero(dynamicRotatingAngle, -179 - targetAngle);
+    }
+
+    // console.error(`Current angle: ${targetAngle}`);
+    // console.error(`Chosen angle: ${rotatingAngle}`);
+    // console.error(`Target:`);
+    // console.error(this.state.target.checkpoint);
+    // console.error(`Self:`);
+    // console.error(selfCoords);
+
+    return rotateVectorPoint(
+      {
+        from: deepCopy(selfCoords),
+        to: deepCopy(this.state.target.checkpoint),
+      },
+      (rotatingAngle * -1) as hexadecimalAngle
+      // rotatingAngle as hexadecimalAngle
+    );
+  }
+}
+
+function closestToZero(first: number, second: number): number {
+  return Math.abs(first) < Math.abs(second) ? first : second;
 }
 
 function compareCoords(coord1: Coordinates, coord2: Coordinates): boolean {
@@ -201,6 +283,30 @@ function trigonometricalDistance(
   ) as pixelDistance;
 }
 
+function degsToRads(degAngle: hexadecimalAngle): radianAngle {
+  return ((degAngle * Math.PI) / 180) as radianAngle;
+}
+
+function rotateVectorPoint(
+  vector: Vector,
+  angle: hexadecimalAngle
+): Coordinates {
+  // "vector.from" acts like the origin point
+  const x = vector.to.x - vector.from.x;
+  const y = vector.to.y - vector.from.y;
+  const radsAngle = degsToRads(angle);
+  // console.error("Vector coords:");
+  // console.error({ x, y });
+  return {
+    x:
+      Math.round(Math.cos(radsAngle) * x - Math.sin(radsAngle) * y) +
+      vector.from.x,
+    y:
+      Math.round(Math.sin(radsAngle) * x + Math.cos(radsAngle) * y) +
+      vector.from.y,
+  };
+}
+
 const TargetStore = new TargetStoreSingleton();
 const GameController = new GameControllerSingleton(TargetStore);
 
@@ -214,11 +320,13 @@ function gameLoop(
   let thrust: number | "BOOST" = 100;
 
   GameController.checkTargetChange(deepCopy(currTargetCoords));
+  GameController.setDynamicProps(selfCoords, opponentCoords, currAngle);
 
   if (GameController.state === undefined) {
     throw new Error("Current state should be initialized by now");
   }
 
+  /* Thrust manipulation: soon in its own method */
   if (currDist < 1100 && currDist >= 600) {
     // 600 -> 110 (min:40,max:100)
     thrust = Math.round((60 * currDist) / 500 - 32);
@@ -237,12 +345,15 @@ function gameLoop(
     // thrust = thrust * 1;
   }
 
-  console.error(GameController.state);
+  const idealTargetCoords = GameController.idealRotatedTarget();
+  // console.error("Ideal coords");
+  // console.error(idealTargetCoords);
+  // console.error(GameController.state);
   console.error("First round");
 
   if (GameController.state.round === 1) {
     // console.error("First round");
-    return `${currTargetCoords.x} ${currTargetCoords.y} ${thrust}`;
+    return `${idealTargetCoords.x} ${idealTargetCoords.y} ${thrust}`;
   }
 
   /* Later rounds */
@@ -250,6 +361,17 @@ function gameLoop(
   if (largestDistanceTarget === undefined) {
     throw new Error("Largest target by distance should be defined by now");
   }
+
+  console.error("GameController.isThrustAvailable");
+  console.error(GameController.isThrustAvailable);
+  console.error("largestDistanceTarget");
+  console.error(largestDistanceTarget);
+  console.error("GameController.state.index");
+  console.error(GameController.state.index);
+  console.error("inRange()");
+  console.error(inRange(currAngle, 10 as hexadecimalAngle));
+  console.error("TargetStore.allTargets");
+  console.error(TargetStore.allTargets);
   if (
     GameController.isThrustAvailable &&
     // && TheStore.pointIndex === 3
@@ -262,12 +384,12 @@ function gameLoop(
   }
 
   /* Look at next objective */
-  if (currDist < 800) {
-    const nextObjective = GameController.nextTarget();
-    return `${nextObjective.checkpoint.x} ${nextObjective.checkpoint.y} ${thrust}`;
-  }
+  // if (currDist < 800) {
+  //   const nextObjective = GameController.nextTarget();
+  //   return `${nextObjective.checkpoint.x} ${nextObjective.checkpoint.y} ${thrust}`;
+  // }
 
-  return `${currTargetCoords.x} ${currTargetCoords.y} ${thrust}`;
+  return `${idealTargetCoords.x} ${idealTargetCoords.y} ${thrust}`;
 }
 
 // game loop
